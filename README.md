@@ -267,7 +267,7 @@ uv run --project ./telegram/mcp_server codex-telegram logout
 # run tests (run from telegram/mcp_server so the pytest config and coverage
 # settings in its pyproject.toml are picked up; this also writes
 # telegram/coverage/coverage.xml for Plugin Eval)
-cd telegram/mcp_server && uv run pytest
+cd telegram/mcp_server && uv run --extra dev pytest
 ```
 
 ### Installed-bundle flow
