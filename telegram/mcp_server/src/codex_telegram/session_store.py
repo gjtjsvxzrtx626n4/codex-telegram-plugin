@@ -11,17 +11,15 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import keyring
-from keyring.errors import KeyringError, NoKeyringError
 
 from .models import StoredSession
 
-SERVICE_NAME = "codex-telegram-plugin"
-ACCOUNT_NAME = "default"
 SESSION_ENV_VAR = "CODEX_TELEGRAM_SESSION"
+SESSION_FILE_ENV_VAR = "CODEX_TELEGRAM_SESSION_FILE"
 MASTER_KEY_ENV_VAR = "CODEX_TELEGRAM_MASTER_KEY"
 CONFIG_DIR_ENV_VAR = "CODEX_TELEGRAM_CONFIG_DIR"
-SESSION_FILE_NAME = "session.enc"
+SESSION_FILE_NAME = "default.session"
+ENCRYPTED_SESSION_FILE_NAME = "session.enc"
 PBKDF2_ITERATIONS = 390_000
 
 
@@ -42,6 +40,17 @@ def _config_dir() -> Path:
 
 def _session_file() -> Path:
     return _config_dir() / SESSION_FILE_NAME
+
+
+def _plain_session_file() -> Path:
+    override = os.getenv(SESSION_FILE_ENV_VAR)
+    if override:
+        return Path(override).expanduser().resolve()
+    return _session_file()
+
+
+def _encrypted_session_file() -> Path:
+    return _config_dir() / ENCRYPTED_SESSION_FILE_NAME
 
 
 def _derive_fernet(master_key: str, salt: bytes) -> Fernet:
@@ -82,7 +91,7 @@ def _ensure_parent(path: Path) -> None:
 
 
 def _write_encrypted_file(record: StoredSession, master_key: str) -> None:
-    file_path = _session_file()
+    file_path = _encrypted_session_file()
     _ensure_parent(file_path)
     payload = _encrypt_payload(record.to_json(), master_key)
     # Write atomically with owner-only permissions from the start; a plain
@@ -107,7 +116,7 @@ def _prompt_master_key(prompt: str = "Telegram session master key: ") -> str:
 
 
 def _read_encrypted_file(master_key: str | None) -> StoredSession | None:
-    file_path = _session_file()
+    file_path = _encrypted_session_file()
     if not file_path.exists():
         return None
     master_key = master_key or os.getenv(MASTER_KEY_ENV_VAR)
@@ -120,27 +129,28 @@ def _read_encrypted_file(master_key: str | None) -> StoredSession | None:
     return StoredSession.from_json(_decrypt_payload(payload, master_key))
 
 
-def _read_keyring() -> StoredSession | None:
+def _write_plain_file(record: StoredSession) -> None:
+    file_path = _plain_session_file()
+    _ensure_parent(file_path)
+    tmp_path = file_path.with_name(file_path.name + ".tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        raw = keyring.get_password(SERVICE_NAME, ACCOUNT_NAME)
-    except (KeyringError, NoKeyringError):
-        return None
-    if not raw:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(record.to_json())
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _read_plain_file() -> StoredSession | None:
+    file_path = _plain_session_file()
+    if not file_path.exists():
         return None
     try:
-        return StoredSession.from_json(raw)
+        return StoredSession.from_json(file_path.read_text(encoding="utf-8"))
     except (JSONDecodeError, TypeError, ValueError, KeyError):
-        # A malformed keyring payload should fall through to the next
-        # storage backend, not crash every session load.
         return None
-
-
-def _write_keyring(record: StoredSession) -> bool:
-    try:
-        keyring.set_password(SERVICE_NAME, ACCOUNT_NAME, record.to_json())
-        return True
-    except (KeyringError, NoKeyringError):
-        return False
 
 
 def load_session(master_key: str | None = None) -> StoredSession:
@@ -154,9 +164,9 @@ def load_session(master_key: str | None = None) -> StoredSession:
             session_string=raw_env_session,
         )
 
-    keyring_session = _read_keyring()
-    if keyring_session:
-        return keyring_session
+    plain_session = _read_plain_file()
+    if plain_session:
+        return plain_session
 
     encrypted_session = _read_encrypted_file(master_key)
     if encrypted_session:
@@ -173,21 +183,9 @@ def save_session(
     *,
     prompt_if_missing: bool = False,
 ) -> str:
-    if _write_keyring(record):
-        return "keyring"
-
-    master_key = master_key or os.getenv(MASTER_KEY_ENV_VAR)
-    if not master_key:
-        if prompt_if_missing:
-            master_key = _prompt_master_key()
-        else:
-            raise SessionStoreError(
-                "The OS keyring is unavailable. Set CODEX_TELEGRAM_MASTER_KEY "
-                "so the plugin can use the encrypted file fallback."
-            )
-
-    _write_encrypted_file(record, master_key)
-    return "encrypted-file"
+    del master_key, prompt_if_missing
+    _write_plain_file(record)
+    return "session-file"
 
 
 def clear_session(master_key: str | None = None, *, prompt_if_missing: bool = False) -> bool:
@@ -196,26 +194,33 @@ def clear_session(master_key: str | None = None, *, prompt_if_missing: bool = Fa
     del master_key, prompt_if_missing
     removed = False
 
-    try:
-        keyring.delete_password(SERVICE_NAME, ACCOUNT_NAME)
+    default_file = _session_file()
+    if default_file.exists():
+        default_file.unlink()
         removed = True
-    except (KeyringError, NoKeyringError):
-        pass
 
-    file_path = _session_file()
-    if file_path.exists():
-        file_path.unlink()
+    override_file = _plain_session_file()
+    if override_file != default_file and override_file.exists():
+        override_file.unlink()
+        removed = True
+
+    encrypted_file = _encrypted_session_file()
+    if encrypted_file.exists():
+        encrypted_file.unlink()
         removed = True
 
     return removed
 
 
 def describe_storage() -> dict[str, Any]:
-    keyring_session = _read_keyring()
-    file_exists = _session_file().exists()
+    session_file = _plain_session_file()
+    encrypted_file = _encrypted_session_file()
     return {
-        "service_name": SERVICE_NAME,
-        "keyring_session_present": keyring_session is not None,
-        "encrypted_file_exists": file_exists,
-        "session_file": str(_session_file()),
+        "backend": "session-file",
+        "keyring_enabled": False,
+        "session_file": str(session_file),
+        "session_file_env_var": SESSION_FILE_ENV_VAR,
+        "session_file_exists": session_file.exists(),
+        "encrypted_file_exists": encrypted_file.exists(),
+        "encrypted_session_file": str(encrypted_file),
     }

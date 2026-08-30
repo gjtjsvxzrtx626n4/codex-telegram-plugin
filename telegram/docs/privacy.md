@@ -8,7 +8,7 @@ The plugin can read Telegram dialogs, messages, contacts, media metadata, downlo
 
 ## Local Storage
 
-Telegram session data is stored in the operating-system keyring when available. If the keyring is unavailable, the plugin stores an encrypted session file at `~/.config/codex-telegram/session.enc` using `CODEX_TELEGRAM_MASTER_KEY`.
+Telegram session data is stored in a local JSON session file. The default path is `~/.config/codex-telegram/default.session`; set `CODEX_TELEGRAM_SESSION_FILE` to use a different path. The plugin does not use the operating-system keyring.
 
 Cached message history is stored locally at `~/.cache/codex-telegram/cache.db` by default. Cache encryption is optional and requires `CODEX_TELEGRAM_CACHE_ENCRYPT=1`, `CODEX_TELEGRAM_MASTER_KEY`, and `pysqlcipher3`.
 

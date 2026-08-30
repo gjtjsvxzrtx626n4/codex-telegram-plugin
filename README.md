@@ -205,7 +205,7 @@ You will be prompted for:
 Successful output looks like:
 
 ```text
-{'ok': True, 'storage': 'keyring', 'user_id': 123, 'username': 'yourname', 'display_name': 'Your Name', 'phone': '+15555555555'}
+{'ok': True, 'storage': 'session-file', 'user_id': 123, 'username': 'yourname', 'display_name': 'Your Name', 'phone': '+15555555555'}
 ```
 
 ## Step 5: Test it in Codex
@@ -299,30 +299,22 @@ Codex registers the skills under the plugin namespace:
 
 ## How sessions are stored
 
-The login wizard stores the Telegram session in:
+The login wizard stores the Telegram session in a local JSON session file.
+By default the path is `~/.config/codex-telegram/default.session`.
+Set `CODEX_TELEGRAM_SESSION_FILE` to choose another path.
 
-1. the OS keyring, if available
-2. otherwise an encrypted file at `~/.config/codex-telegram/session.enc`
+The plugin does not use the operating-system keyring. This keeps Codex Remote
+workflows non-interactive and avoids macOS Keychain prompts or hangs when Codex
+is controlled from another device.
 
-`CODEX_TELEGRAM_SESSION` also exists, but it is intended for test/CI use only. It injects a raw `StringSession` directly and bypasses the normal keyring / encrypted-file flow.
+`CODEX_TELEGRAM_SESSION` also exists for direct raw `StringSession` injection,
+mainly in test/CI environments. When it is set together with `TG_API_ID` and
+`TG_API_HASH`, it takes precedence over the session file.
 
-If the OS keyring is unavailable:
-
-```bash
-# preferred: let the login flow prompt if keyring is unavailable
-uv run --project ./telegram/mcp_server codex-telegram login
-```
-
-or:
-
-```bash
-read -rsp "Telegram session master key: " CODEX_TELEGRAM_MASTER_KEY; echo
-export CODEX_TELEGRAM_MASTER_KEY
-uv run --project ./telegram/mcp_server codex-telegram login
-unset CODEX_TELEGRAM_MASTER_KEY
-```
-
-Do not pass the master key as a CLI flag. It ends up in shell history and `ps`.
+Older installs may still have an encrypted legacy session at
+`~/.config/codex-telegram/session.enc`. The plugin can read it when
+`CODEX_TELEGRAM_MASTER_KEY` is set, but new logins write `default.session`
+instead.
 
 ## Environment variables
 
@@ -331,12 +323,13 @@ Do not pass the master key as a CLI flag. It ends up in shell history and `ps`.
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TG_API_ID`                        | Telegram API ID used for login/session bootstrap.                                                                                             |
 | `TG_API_HASH`                      | Telegram API hash used for login/session bootstrap.                                                                                           |
-| `CODEX_TELEGRAM_MASTER_KEY`        | Encrypts/decrypts the fallback session file when the OS keyring is unavailable.                                                               |
-| `CODEX_TELEGRAM_SESSION`           | Test/CI-only raw `StringSession` injection. Avoid using this for normal local installs.                                                       |
+| `CODEX_TELEGRAM_SESSION_FILE`      | Optional path to the local JSON session file. Defaults to `~/.config/codex-telegram/default.session`.                                         |
+| `CODEX_TELEGRAM_MASTER_KEY`        | Decrypts the legacy encrypted session file and encrypts/decrypts the optional local SQLite message cache.                                      |
+| `CODEX_TELEGRAM_SESSION`           | Direct raw `StringSession` injection, mainly for test/CI use. Takes precedence over the session file when API credentials are also set.        |
 | `CODEX_TELEGRAM_CACHE_ENCRYPT`     | Optional: set to `1` to encrypt the local SQLite message cache. Requires `pysqlcipher3` plus `CODEX_TELEGRAM_MASTER_KEY`.                    |
 | `CODEX_TELEGRAM_ALLOW_DESTRUCTIVE` | Must be set to `1` plus `confirm=True` on the tool call before destructive tools like `delete_chat`, `delete_messages`, or `logout` will run. |
 | `CODEX_TELEGRAM_UPLOAD_DIR`        | Upload sandbox for `send_*` and `set_profile_photo`. Files outside this directory require `allow_arbitrary_path=True`.                        |
-| `CODEX_TELEGRAM_CONFIG_DIR`        | Optional: overrides the config directory that stores the encrypted session file (default `~/.config/codex-telegram`).                         |
+| `CODEX_TELEGRAM_CONFIG_DIR`        | Optional: overrides the config directory that stores the default session file (default `~/.config/codex-telegram`).                           |
 | `CODEX_TELEGRAM_MEDIA_SCRIPTS_DIR` | Optional: overrides the directory containing the `telegram-media-inspect` scripts used by `inspect_message_media`.                            |
 | `XDG_CACHE_HOME`                   | Optional (standard XDG var): changes where the local message cache lives (default `~/.cache/codex-telegram/cache.db`).                        |
 
@@ -390,9 +383,12 @@ Do not rely on that alone. Plugin-bundled MCP servers can be present at runtime 
 2. the plugin page lists `telegram_personal`
 3. a fresh thread can use `@Telegram`
 
-### Keyring issues
+### Session file issues
 
-If the OS keyring fails, rerun login and let it prompt, or pre-set `CODEX_TELEGRAM_MASTER_KEY`.
+If `codex-telegram storage` says no session file exists, rerun login in the same
+environment or set `CODEX_TELEGRAM_SESSION_FILE` to the path that contains your
+session file. The session file is sensitive; keep it out of git and restrict it
+to owner-only permissions.
 
 ## What Codex sees
 

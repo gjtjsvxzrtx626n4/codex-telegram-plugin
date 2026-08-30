@@ -16,143 +16,105 @@ def _sample_session() -> StoredSession:
     )
 
 
-def test_keyring_roundtrip(monkeypatch, tmp_path):
+def test_session_file_roundtrip(monkeypatch, tmp_path):
     monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
-    store: dict[tuple[str, str], str] = {}
-
-    monkeypatch.setattr(
-        session_store.keyring,
-        "set_password",
-        lambda service, account, value: store.__setitem__((service, account), value),
-    )
-    monkeypatch.setattr(
-        session_store.keyring,
-        "get_password",
-        lambda service, account: store.get((service, account)),
-    )
-    monkeypatch.setattr(
-        session_store.keyring,
-        "delete_password",
-        lambda service, account: store.pop((service, account), None),
-    )
+    monkeypatch.delenv(session_store.SESSION_FILE_ENV_VAR, raising=False)
+    monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
 
     session = _sample_session()
     backend = session_store.save_session(session)
     loaded = session_store.load_session()
 
-    assert backend == "keyring"
-    assert loaded == session
-    assert session_store.clear_session() is True
-
-
-def test_encrypted_file_fallback(monkeypatch, tmp_path):
-    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
-    monkeypatch.setenv(session_store.MASTER_KEY_ENV_VAR, "super-secret-master-key")
-
-    def _raise(*_args, **_kwargs):
-        raise session_store.NoKeyringError()
-
-    monkeypatch.setattr(session_store.keyring, "set_password", _raise)
-    monkeypatch.setattr(session_store.keyring, "get_password", _raise)
-    monkeypatch.setattr(session_store.keyring, "delete_password", _raise)
-
-    session = _sample_session()
-    backend = session_store.save_session(session)
-    loaded = session_store.load_session()
-
-    assert backend == "encrypted-file"
+    assert backend == "session-file"
     assert loaded == session
     assert session_store._session_file().exists()
+    assert (session_store._session_file().stat().st_mode & 0o777) == 0o600
     assert session_store.clear_session() is True
 
 
-def test_keyring_payload_with_unknown_keys_still_loads(monkeypatch, tmp_path):
-    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+def test_session_file_override_roundtrip(monkeypatch, tmp_path):
+    override_path = tmp_path / "remote-friendly.session"
+    monkeypatch.setenv(session_store.SESSION_FILE_ENV_VAR, str(override_path))
     monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
-    payload = _sample_session().to_json()
-    # Simulate a payload written by a newer plugin version with extra fields.
-    import json
 
-    data = json.loads(payload)
-    data["future_field"] = "surprise"
-    monkeypatch.setattr(
-        session_store.keyring,
-        "get_password",
-        lambda service, account: json.dumps(data),
-    )
+    session = _sample_session()
+    backend = session_store.save_session(session)
+
+    assert backend == "session-file"
+    assert session_store.load_session() == session
+    assert override_path.exists()
+    assert (override_path.stat().st_mode & 0o777) == 0o600
+    assert session_store.clear_session() is True
+    assert not override_path.exists()
+
+
+def test_env_session_takes_precedence(monkeypatch, tmp_path):
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    monkeypatch.setenv(session_store.SESSION_ENV_VAR, "env-session")
+    monkeypatch.setenv("TG_API_ID", "999")
+    monkeypatch.setenv("TG_API_HASH", "env-hash")
+
+    session_store.save_session(_sample_session())
+    loaded = session_store.load_session()
+
+    assert loaded.api_id == 999
+    assert loaded.api_hash == "env-hash"
+    assert loaded.session_string == "env-session"
+
+
+def test_legacy_encrypted_file_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    monkeypatch.setenv(session_store.MASTER_KEY_ENV_VAR, "super-secret-master-key")
+    monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
+
+    session = _sample_session()
+    session_store._write_encrypted_file(session, master_key="super-secret-master-key")
 
     loaded = session_store.load_session()
 
-    assert loaded.api_id == 12345
-    assert loaded.username == "alice"
+    assert loaded == session
+    assert session_store._encrypted_session_file().exists()
+    assert session_store.clear_session() is True
 
 
-def test_malformed_keyring_payload_falls_through(monkeypatch, tmp_path):
-    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
-    monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
-    # JSON that decodes but cannot construct a StoredSession (missing
-    # required fields) must fall through, not crash load_session.
-    monkeypatch.setattr(
-        session_store.keyring,
-        "get_password",
-        lambda service, account: '{"unexpected": true}',
-    )
-
+def test_missing_legacy_encrypted_file_master_key(monkeypatch, tmp_path):
     import pytest
+
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    monkeypatch.delenv(session_store.MASTER_KEY_ENV_VAR, raising=False)
+    monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
+    session_store._write_encrypted_file(_sample_session(), master_key="hunter2")
 
     with pytest.raises(session_store.MissingSessionError):
         session_store.load_session()
 
 
-def test_clear_session_removes_encrypted_file_without_master_key(monkeypatch, tmp_path):
+def test_malformed_session_file_falls_through(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    monkeypatch.delenv(session_store.SESSION_ENV_VAR, raising=False)
+    session_store._session_file().write_text('{"unexpected": true}', encoding="utf-8")
+
+    with pytest.raises(session_store.MissingSessionError):
+        session_store.load_session()
+
+
+def test_clear_session_removes_legacy_encrypted_file_without_master_key(monkeypatch, tmp_path):
     monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
     monkeypatch.delenv(session_store.MASTER_KEY_ENV_VAR, raising=False)
-    monkeypatch.setattr(
-        session_store.keyring,
-        "delete_password",
-        lambda service, account: (_ for _ in ()).throw(session_store.NoKeyringError()),
-    )
-    session_file = tmp_path / session_store.SESSION_FILE_NAME
-    session_file.write_text("{}", encoding="utf-8")
+    session_store._encrypted_session_file().write_text("{}", encoding="utf-8")
 
-    # Deleting a file never needed the decryption key; logout must work
-    # non-interactively.
     assert session_store.clear_session() is True
-    assert not session_file.exists()
-
-
-def test_encrypted_file_written_atomically_with_owner_only_permissions(monkeypatch, tmp_path):
-    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
-    monkeypatch.setattr(
-        session_store.keyring,
-        "set_password",
-        lambda service, account, value: (_ for _ in ()).throw(session_store.NoKeyringError()),
-    )
-
-    backend = session_store.save_session(_sample_session(), master_key="hunter2")
-
-    session_file = tmp_path / session_store.SESSION_FILE_NAME
-    assert backend == "encrypted-file"
-    assert session_file.exists()
-    assert (session_file.stat().st_mode & 0o777) == 0o600
-    # No temp file left behind.
-    assert list(tmp_path.glob("*.tmp")) == []
+    assert not session_store._encrypted_session_file().exists()
 
 
 def test_failed_session_write_preserves_previous_file(monkeypatch, tmp_path):
-    # The write must be temp-file + os.replace: if the final swap fails, the
-    # previous session file is untouched and the temp file is removed. A
-    # direct write_text would have already clobbered the old content.
-    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
-    monkeypatch.setattr(
-        session_store.keyring,
-        "set_password",
-        lambda service, account, value: (_ for _ in ()).throw(session_store.NoKeyringError()),
-    )
-    session_file = tmp_path / session_store.SESSION_FILE_NAME
-    session_file.write_text("previous-session", encoding="utf-8")
-
     import pytest
+
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    session_file = session_store._session_file()
+    session_file.write_text("previous-session", encoding="utf-8")
 
     def failing_replace(_src, _dst):
         raise OSError("disk full")
@@ -160,7 +122,21 @@ def test_failed_session_write_preserves_previous_file(monkeypatch, tmp_path):
     monkeypatch.setattr(session_store.os, "replace", failing_replace)
 
     with pytest.raises(OSError, match="disk full"):
-        session_store.save_session(_sample_session(), master_key="hunter2")
+        session_store.save_session(_sample_session())
 
     assert session_file.read_text(encoding="utf-8") == "previous-session"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_describe_storage_reports_session_file(monkeypatch, tmp_path):
+    monkeypatch.setenv(session_store.CONFIG_DIR_ENV_VAR, str(tmp_path))
+    session_store.save_session(_sample_session())
+
+    result = session_store.describe_storage()
+
+    assert result["backend"] == "session-file"
+    assert result["keyring_enabled"] is False
+    assert result["session_file"] == str(session_store._session_file())
+    assert result["session_file_exists"] is True
+    assert result["session_file_env_var"] == session_store.SESSION_FILE_ENV_VAR
+    assert result["encrypted_file_exists"] is False

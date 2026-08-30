@@ -8,7 +8,7 @@ You are responsible for complying with Telegram's terms, local law, and the expe
 
 ## Account Credentials
 
-Use your own Telegram API credentials from `my.telegram.org/apps`. Do not share your `api_hash`, Telegram session string, or `CODEX_TELEGRAM_MASTER_KEY`.
+Use your own Telegram API credentials from `my.telegram.org/apps`. Do not share your `api_hash`, Telegram session string, local session file, or `CODEX_TELEGRAM_MASTER_KEY`.
 
 ## Write Actions
 

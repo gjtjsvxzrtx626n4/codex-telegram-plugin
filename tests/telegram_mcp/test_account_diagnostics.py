@@ -33,17 +33,19 @@ def test_telegram_diagnostics_reports_runtime_storage_and_plaintext_cache(monkey
         account,
         "describe_storage",
         lambda: {
-            "service_name": "codex-telegram-plugin",
-            "keyring_session_present": True,
+            "backend": "session-file",
+            "keyring_enabled": False,
+            "session_file_exists": True,
             "encrypted_file_exists": False,
-            "session_file": str(tmp_path / "session.enc"),
+            "session_file": str(tmp_path / "default.session"),
         },
     )
 
     result = asyncio.run(_tool_from("telegram_diagnostics")())
 
     assert result["runtime"]["package_version"] == account.__version__
-    assert result["session_storage"]["keyring_session_present"] is True
+    assert result["session_storage"]["backend"] == "session-file"
+    assert result["session_storage"]["keyring_enabled"] is False
     assert result["cache"]["path"] == str(cache_path)
     assert result["cache"]["exists"] is True
     assert result["cache"]["encryption_enabled"] is False

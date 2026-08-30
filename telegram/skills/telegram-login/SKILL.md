@@ -8,7 +8,7 @@ description: Use when Telegram auth setup, reset, or diagnostics are requested.
 3. Instruct them to run the login command from the plugin checkout root (the directory that contains `mcp_server/`; in a repo checkout that is `telegram/`, in an installed bundle it is `~/.codex/plugins/cache/<marketplace>/telegram/<version>/`):
    `uv run --project ./mcp_server codex-telegram login` — or pass the absolute path, e.g. `uv run --project /path/to/telegram/mcp_server codex-telegram login`, to run it from anywhere.
 4. Mention the prompts they will see: API ID, API hash, phone number, login code, and optional 2FA password.
-5. If the OS keyring is unavailable, instruct them to rerun and let the login flow prompt for a master key, or set `CODEX_TELEGRAM_MASTER_KEY` in the environment first.
+5. Explain that the login flow writes a local JSON session file instead of using the OS keyring. The default path is `~/.config/codex-telegram/default.session`; set `CODEX_TELEGRAM_SESSION_FILE` before login to choose another path.
 6. Once login succeeds, use `get_session_info` or `get_me` to confirm the account.
 7. For diagnostics without valid auth (storage backend, cache state, runtime paths), call the `telegram_diagnostics` tool — it never requires a connected session.
 8. If they want to clear auth, run `uv run --project ./mcp_server codex-telegram logout` from the same directory (or use the `logout` MCP tool with `confirm=true` if destructive tools are enabled).
